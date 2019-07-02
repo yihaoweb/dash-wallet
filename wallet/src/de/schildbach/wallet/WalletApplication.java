@@ -132,6 +132,8 @@ public class WalletApplication extends Application {
         }
         refWatcher = LeakCanary.install(this);
 
+        org.dash.wallet.common.Constants.LOGGING_INTERCEPTOR = Constants.LOGGING_INTERCEPTOR;
+
         registerActivityLifecycleCallbacks(new ActivitiesTracker() {
             @Override
             public void onStartedAny(boolean isTheFirstOne) {
