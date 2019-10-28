@@ -1,5 +1,5 @@
 /*
- * Copyright the original author or authors.
+ * Copyright 2012-2015 the original author or authors.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,15 +12,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-package de.schildbach.wallet.ui.scan;
+package de.schildbach.wallet.ui;
 
 import java.util.EnumMap;
 import java.util.Map;
-
-import javax.annotation.Nullable;
 
 import org.dash.wallet.common.ui.DialogBuilder;
 import org.slf4j.Logger;
@@ -36,27 +34,19 @@ import com.google.zxing.ResultPointCallback;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
 
-import de.schildbach.wallet.ui.AbstractWalletActivity;
-import de.schildbach.wallet.util.OnFirstPreDraw;
+import de.schildbach.wallet.camera.CameraManager;
 import de.schildbach.wallet_test.R;
 
 import android.Manifest;
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
-import android.annotation.SuppressLint;
-import android.app.Activity;
-import android.app.ActivityOptions;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
-import android.graphics.drawable.ColorDrawable;
 import android.hardware.Camera;
 import android.hardware.Camera.CameraInfo;
 import android.hardware.Camera.PreviewCallback;
@@ -66,113 +56,53 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Process;
 import android.os.Vibrator;
+import androidx.core.app.ActivityCompat;
+import androidx.fragment.app.DialogFragment;
+import androidx.core.content.ContextCompat;
+import androidx.appcompat.app.AppCompatActivity;
 import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.TextureView.SurfaceTextureListener;
 import android.view.View;
-import android.view.ViewAnimationUtils;
 import android.view.WindowManager;
-import android.view.animation.AccelerateInterpolator;
-
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-import androidx.fragment.app.DialogFragment;
-import androidx.fragment.app.Fragment;
-import androidx.fragment.app.FragmentManager;
-import androidx.lifecycle.Observer;
-import androidx.lifecycle.ViewModelProviders;
 
 /**
  * @author Andreas Schildbach
  */
 @SuppressWarnings("deprecation")
-public final class ScanActivity extends AbstractWalletActivity
+public final class ScanActivity extends AppCompatActivity
         implements SurfaceTextureListener, ActivityCompat.OnRequestPermissionsResultCallback {
-    private static final String INTENT_EXTRA_SCENE_TRANSITION_X = "scene_transition_x";
-    private static final String INTENT_EXTRA_SCENE_TRANSITION_Y = "scene_transition_y";
     public static final String INTENT_EXTRA_RESULT = "result";
-
-    public static void startForResult(final Activity activity, @Nullable final View clickView, final int requestCode) {
-        if (clickView != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            final int[] clickViewLocation = new int[2];
-            clickView.getLocationOnScreen(clickViewLocation);
-            final Intent intent = new Intent(activity, ScanActivity.class);
-            intent.putExtra(ScanActivity.INTENT_EXTRA_SCENE_TRANSITION_X,
-                    (int) (clickViewLocation[0] + clickView.getWidth() / 2));
-            intent.putExtra(ScanActivity.INTENT_EXTRA_SCENE_TRANSITION_Y,
-                    (int) (clickViewLocation[1] + clickView.getHeight() / 2));
-            final ActivityOptions options = ActivityOptions.makeSceneTransitionAnimation(activity, clickView,
-                    "transition");
-            activity.startActivityForResult(intent, requestCode, options.toBundle());
-        } else {
-            startForResult(activity, requestCode);
-        }
-    }
-
-    public static void startForResult(final Activity activity, final int resultCode) {
-        activity.startActivityForResult(new Intent(activity, ScanActivity.class), resultCode);
-    }
-
-    public static void startForResult(final Fragment fragment, final Activity activity, final int resultCode) {
-        fragment.startActivityForResult(new Intent(activity, ScanActivity.class), resultCode);
-    }
 
     private static final long VIBRATE_DURATION = 50L;
     private static final long AUTO_FOCUS_INTERVAL_MS = 2500L;
 
     private final CameraManager cameraManager = new CameraManager();
-
-    private View contentView;
     private ScannerView scannerView;
     private TextureView previewView;
-
     private volatile boolean surfaceCreated = false;
-    private Animator sceneTransition = null;
 
     private Vibrator vibrator;
     private HandlerThread cameraThread;
     private volatile Handler cameraHandler;
 
-    private ScanViewModel viewModel;
+    private static boolean DISABLE_CONTINUOUS_AUTOFOCUS = Build.MODEL.equals("GT-I9100") // Galaxy S2
+            || Build.MODEL.equals("SGH-T989") // Galaxy S2
+            || Build.MODEL.equals("SGH-T989D") // Galaxy S2 X
+            || Build.MODEL.equals("SAMSUNG-SGH-I727") // Galaxy S2 Skyrocket
+            || Build.MODEL.equals("GT-I9300") // Galaxy S3
+            || Build.MODEL.equals("GT-N7000"); // Galaxy Note
 
     private static final Logger log = LoggerFactory.getLogger(ScanActivity.class);
 
-    @SuppressLint("WrongConstant")
     @Override
     public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
 
-        viewModel = ViewModelProviders.of(this).get(ScanViewModel.class);
-        viewModel.showPermissionWarnDialog.observe(this, new Observer<Void>() {
-            @Override
-            public void onChanged(final Void v) {
-                WarnDialogFragment.show(getSupportFragmentManager(), R.string.scan_camera_permission_dialog_title,
-                        getString(R.string.scan_camera_permission_dialog_message));
-            }
-        });
-        viewModel.showProblemWarnDialog.observe(this, new Observer<Void>() {
-            @Override
-            public void onChanged(final Void v) {
-                WarnDialogFragment.show(getSupportFragmentManager(), R.string.scan_camera_problem_dialog_title,
-                        getString(R.string.scan_camera_problem_dialog_message));
-            }
-        });
-
-        // Stick to the orientation the activity was started with. We cannot declare this in the
-        // AndroidManifest.xml, because it's not allowed in combination with the windowIsTranslucent=true
-        // theme attribute.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LOCKED);
-        }
-        // Draw under navigation and status bars.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-            getWindow().setFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-
         setContentView(R.layout.scan_activity);
-        contentView = findViewById(android.R.id.content);
         scannerView = (ScannerView) findViewById(R.id.scan_activity_mask);
         previewView = (TextureView) findViewById(R.id.scan_activity_preview);
         previewView.setSurfaceTextureListener(this);
@@ -183,48 +113,6 @@ public final class ScanActivity extends AbstractWalletActivity
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
             ActivityCompat.requestPermissions(this, new String[] { Manifest.permission.CAMERA }, 0);
-
-        if (savedInstanceState == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            final Intent intent = getIntent();
-            final int x = intent.getIntExtra(INTENT_EXTRA_SCENE_TRANSITION_X, -1);
-            final int y = intent.getIntExtra(INTENT_EXTRA_SCENE_TRANSITION_Y, -1);
-            if (x != -1 || y != -1) {
-                // Using alpha rather than visibility because 'invisible' will cause the surface view to never
-                // start up, so the animation will never start.
-                contentView.setAlpha(0);
-                getWindow()
-                        .setBackgroundDrawable(new ColorDrawable(getResources().getColor(android.R.color.transparent)));
-                OnFirstPreDraw.listen(contentView, new OnFirstPreDraw.Callback() {
-                    @Override
-                    public boolean onFirstPreDraw() {
-                        float finalRadius = (float) (Math.max(contentView.getWidth(), contentView.getHeight()));
-                        final int duration = getResources().getInteger(android.R.integer.config_mediumAnimTime);
-                        sceneTransition = ViewAnimationUtils.createCircularReveal(contentView, x, y, 0, finalRadius);
-                        sceneTransition.setDuration(duration);
-                        sceneTransition.setInterpolator(new AccelerateInterpolator());
-                        // TODO Here, the transition should start in a paused state, showing the first frame
-                        // of the animation. Sadly, RevealAnimator doesn't seem to support this, unlike
-                        // (subclasses of) ValueAnimator.
-                        return false;
-                    }
-                });
-            }
-        }
-    }
-
-    private void maybeTriggerSceneTransition() {
-        if (sceneTransition != null) {
-            contentView.setAlpha(1);
-            sceneTransition.addListener(new AnimatorListenerAdapter() {
-                @Override
-                public void onAnimationEnd(Animator animation) {
-                    getWindow()
-                            .setBackgroundDrawable(new ColorDrawable(getResources().getColor(android.R.color.black)));
-                }
-            });
-            sceneTransition.start();
-            sceneTransition = null;
-        }
     }
 
     @Override
@@ -249,19 +137,27 @@ public final class ScanActivity extends AbstractWalletActivity
 
         previewView.setSurfaceTextureListener(null);
 
-        // We're removing the requested orientation because if we don't, somehow the requested orientation is
-        // bleeding through to the calling activity, forcing it into a locked state until it is restarted.
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         super.onDestroy();
     }
 
     @Override
     public void onRequestPermissionsResult(final int requestCode, final String[] permissions,
             final int[] grantResults) {
-        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             maybeOpenCamera();
-        else
-            viewModel.showPermissionWarnDialog.call();
+        } else {
+            new Handler().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (isFinishing())
+                        return;
+                    WarnDialogFragment
+                            .newInstance(R.string.scan_camera_permission_dialog_title,
+                                    getString(R.string.scan_camera_permission_dialog_message))
+                            .show(getSupportFragmentManager(), "dialog");
+                }
+            }, 200);
+        }
     }
 
     private void maybeOpenCamera() {
@@ -292,16 +188,14 @@ public final class ScanActivity extends AbstractWalletActivity
 
     @Override
     public void onAttachedToWindow() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true);
-        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
     }
 
     @Override
     public void onBackPressed() {
         scannerView.setVisibility(View.GONE);
         setResult(RESULT_CANCELED);
-        finish();
+        postFinish();
     }
 
     @Override
@@ -349,7 +243,7 @@ public final class ScanActivity extends AbstractWalletActivity
         @Override
         public void run() {
             try {
-                final Camera camera = cameraManager.open(previewView, displayRotation());
+                final Camera camera = cameraManager.open(previewView, displayRotation(), !DISABLE_CONTINUOUS_AUTOFOCUS);
 
                 final Rect framingRect = cameraManager.getFrame();
                 final RectF framingRectInPreview = new RectF(cameraManager.getFramePreview());
@@ -372,11 +266,20 @@ public final class ScanActivity extends AbstractWalletActivity
                 if (nonContinuousAutoFocus)
                     cameraHandler.post(new AutoFocusRunnable(camera));
 
-                maybeTriggerSceneTransition();
                 cameraHandler.post(fetchAndDecodeRunnable);
             } catch (final Exception x) {
                 log.info("problem opening camera", x);
-                viewModel.showProblemWarnDialog.postCall();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (isFinishing())
+                            return;
+                        WarnDialogFragment
+                                .newInstance(R.string.scan_camera_problem_dialog_title,
+                                        getString(R.string.scan_camera_problem_dialog_message))
+                                .show(getSupportFragmentManager(), "dialog");
+                    }
+                });
             }
         }
 
@@ -476,15 +379,13 @@ public final class ScanActivity extends AbstractWalletActivity
     };
 
     public static class WarnDialogFragment extends DialogFragment {
-        private static final String FRAGMENT_TAG = WarnDialogFragment.class.getName();
-
-        public static void show(final FragmentManager fm, final int titleResId, final String message) {
-            final WarnDialogFragment newFragment = new WarnDialogFragment();
+        public static WarnDialogFragment newInstance(final int titleResId, final String message) {
+            final WarnDialogFragment fragment = new WarnDialogFragment();
             final Bundle args = new Bundle();
             args.putInt("title", titleResId);
             args.putString("message", message);
-            newFragment.setArguments(args);
-            newFragment.show(fm, FRAGMENT_TAG);
+            fragment.setArguments(args);
+            return fragment;
         }
 
         @Override
